@@ -1,20 +1,60 @@
 const Appointment = require('./appointment.model');
+const Staff = require('../staff/staff.model');
 const { AppError } = require('../../core/utils');
-const { APPOINTMENT_STATUS, PAYMENT_METHOD, PAYMENT_STATUS } = require('../../core/constants');
+const {
+  APPOINTMENT_STATUS,
+  PAYMENT_METHOD,
+} = require('../../core/constants');
+
+function getDayRange(inputDate) {
+  const date = new Date(inputDate);
+
+  if (Number.isNaN(date.getTime())) {
+    throw new AppError('Invalid date', 400);
+  }
+
+  const start = new Date(date);
+  start.setHours(0, 0, 0, 0);
+
+  const end = new Date(date);
+  end.setHours(23, 59, 59, 999);
+
+  return { start, end };
+}
+
+function buildDateRangeFilter(query) {
+  const filter = {};
+
+  if (query.from || query.to) {
+    filter.date = {};
+
+    if (query.from) {
+      const from = new Date(query.from);
+      from.setHours(0, 0, 0, 0);
+      filter.date.$gte = from;
+    }
+
+    if (query.to) {
+      const to = new Date(query.to);
+      to.setHours(23, 59, 59, 999);
+      filter.date.$lte = to;
+    }
+  }
+
+  return filter;
+}
 
 class AppointmentService {
-  /**
-   * Create a new appointment booking
-   */
   static async createAppointment(userId, data) {
-    // Check if slot is heavily booked (allow multiple unassigned, but ideally system checks availability)
+    const { start, end } = getDayRange(data.date);
+
     const existingCount = await Appointment.countDocuments({
-      date: new Date(data.date),
+      date: { $gte: start, $lte: end },
       timeSlot: data.timeSlot,
-      status: { $ne: APPOINTMENT_STATUS.CANCELLED }
+      status: { $ne: APPOINTMENT_STATUS.CANCELLED },
     });
 
-    if (existingCount > 5) { // Arbitrary limit for unassigned bookings per slot
+    if (existingCount > 5) {
       throw new AppError('This time slot is full. Please select another slot.', 409);
     }
 
@@ -22,56 +62,119 @@ class AppointmentService {
 
     const appointmentData = {
       ...data,
+      date: start,
       user: userId,
       ticketNumber,
-      // If cash, mark status as pending until visit. If online, keep as created until payment verifies.
-      status: data.paymentMethod === PAYMENT_METHOD.CASH ? APPOINTMENT_STATUS.CONFIRMED : APPOINTMENT_STATUS.CREATED,
+      status:
+        data.paymentMethod === PAYMENT_METHOD.CASH
+          ? APPOINTMENT_STATUS.CONFIRMED
+          : APPOINTMENT_STATUS.CREATED,
     };
 
     return Appointment.create(appointmentData);
   }
 
-  /**
-   * Get user's appointments
-   */
-  static async getUserAppointments(userId) {
-    return Appointment.find({ user: userId })
-      .populate('staff', 'name phone')
+  static async getUserAppointments(userId, query = {}) {
+    const filter = {
+      user: userId,
+      ...buildDateRangeFilter(query),
+    };
+
+    return Appointment.find(filter)
+      .populate('staff', 'name phone email isAvailable')
       .sort({ date: 1, timeSlot: 1 });
   }
 
-  /**
-   * Admin: Get all appointments
-   */
-  static async getAllAppointments(query) {
-    const filter = {};
-    if (query.status) filter.status = query.status;
-    if (query.date) filter.date = new Date(query.date);
+  static async getStaffAppointments(userId, query = {}) {
+    const staff = await Staff.findOne({ userAccount: userId });
+
+    if (!staff) {
+      throw new AppError('Staff profile not found', 404);
+    }
+
+    const filter = {
+      staff: staff._id,
+      ...buildDateRangeFilter(query),
+    };
+
+    if (query.status) {
+      filter.status = query.status;
+    }
 
     return Appointment.find(filter)
       .populate('user', 'name email phone')
-      .populate('staff', 'name phone isAvailable')
-      .sort({ date: -1 });
+      .populate('staff', 'name phone email isAvailable')
+      .sort({ date: 1, timeSlot: 1 });
   }
 
-  /**
-   * Admin: Assign staff to appointment
-   */
-  static async assignStaff(appointmentId, staffId) {
-    const appointment = await Appointment.findById(appointmentId);
-    if (!appointment) throw new AppError('Appointment not found', 404);
+  static async getAllAppointments(query = {}) {
+    const filter = {
+      ...buildDateRangeFilter(query),
+    };
 
-    if (appointment.status === APPOINTMENT_STATUS.CANCELLED || appointment.status === APPOINTMENT_STATUS.CLOSED) {
-      throw new AppError('Cannot assign staff to a cancelled or closed appointment', 400);
+    if (query.status) filter.status = query.status;
+    if (query.staffId) filter.staff = query.staffId;
+    if (query.userId) filter.user = query.userId;
+
+    if (query.date) {
+      const { start, end } = getDayRange(query.date);
+      filter.date = { $gte: start, $lte: end };
     }
 
-    // Check if staff is already booked for this slot
+    return Appointment.find(filter)
+      .populate('user', 'name email phone')
+      .populate('staff', 'name phone email isAvailable')
+      .sort({ date: 1, timeSlot: 1 });
+  }
+
+  static async getCalendarAppointments(query = {}) {
+    const filter = {
+      ...buildDateRangeFilter(query),
+    };
+
+    if (query.status) filter.status = query.status;
+    if (query.staffId) filter.staff = query.staffId;
+    if (query.userId) filter.user = query.userId;
+
+    return Appointment.find(filter)
+      .populate('user', 'name email phone')
+      .populate('staff', 'name phone email isAvailable')
+      .sort({ date: 1, timeSlot: 1 });
+  }
+
+  static async assignStaff(appointmentId, staffId) {
+    const appointment = await Appointment.findById(appointmentId);
+
+    if (!appointment) throw new AppError('Appointment not found', 404);
+
+    if (
+      appointment.status === APPOINTMENT_STATUS.CANCELLED ||
+      appointment.status === APPOINTMENT_STATUS.CLOSED
+    ) {
+      throw new AppError(
+        'Cannot assign staff to a cancelled or closed appointment',
+        400
+      );
+    }
+
+    const staff = await Staff.findById(staffId);
+
+    if (!staff) {
+      throw new AppError('Staff not found', 404);
+    }
+
+    if (staff.isAvailable === false) {
+      throw new AppError('Selected staff is currently unavailable', 409);
+    }
+
     const conflict = await Appointment.findOne({
       staff: staffId,
       date: appointment.date,
       timeSlot: appointment.timeSlot,
       _id: { $ne: appointmentId },
-      status: { $nin: [APPOINTMENT_STATUS.CANCELLED, APPOINTMENT_STATUS.CLOSED] }
+      status: {
+        $nin: [APPOINTMENT_STATUS.CANCELLED, APPOINTMENT_STATUS.CLOSED],
+      },
     });
 
     if (conflict) {
@@ -82,19 +185,26 @@ class AppointmentService {
     appointment.status = APPOINTMENT_STATUS.ASSIGNED;
     await appointment.save();
 
-    return appointment;
+    return Appointment.findById(appointment._id)
+      .populate('user', 'name email phone')
+      .populate('staff', 'name phone email isAvailable');
   }
 
-  /**
-   * Update appointment status
-   */
   static async updateStatus(appointmentId, status) {
     const validStatuses = Object.values(APPOINTMENT_STATUS);
+
     if (!validStatuses.includes(status)) {
       throw new AppError('Invalid status', 400);
     }
 
-    const appointment = await Appointment.findByIdAndUpdate(appointmentId, { status }, { new: true });
+    const appointment = await Appointment.findByIdAndUpdate(
+      appointmentId,
+      { status },
+      { new: true }
+    )
+      .populate('user', 'name email phone')
+      .populate('staff', 'name phone email isAvailable');
+
     if (!appointment) throw new AppError('Appointment not found', 404);
 
     return appointment;

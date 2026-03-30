@@ -39,14 +39,27 @@ app.use(morgan(NODE_ENV === 'development' ? 'dev' : 'combined'));
 app.use(express.json({ limit: '10mb' }));
 app.use(express.urlencoded({ extended: true }));
 app.use(cookieParser());
-app.use(apiLimiter);
 
 // Static file serving for uploads
-app.use('/uploads', express.static(uploadsDir));
+app.use(
+  '/uploads',
+  express.static(uploadsDir, {
+    maxAge: '7d',
+    etag: true,
+    lastModified: true,
+  })
+);
+
+// Apply rate limit only to API routes
+app.use('/api', apiLimiter);
 
 // ------- API Routes -------
 app.get('/api/health', (req, res) => {
-  res.json({ success: true, message: 'TileVista API is running', timestamp: new Date().toISOString() });
+  res.json({
+    success: true,
+    message: 'TileVista API is running',
+    timestamp: new Date().toISOString(),
+  });
 });
 
 app.use('/api/auth', authRoutes);
@@ -70,7 +83,7 @@ const startServer = async () => {
   try {
     await connectDB();
     app.listen(PORT, () => {
-      console.log(`🚀  API running on port ${PORT} in ${NODE_ENV} mode`);
+      console.log(`🚀 API running on port ${PORT} in ${NODE_ENV} mode`);
     });
   } catch (error) {
     console.error('Failed to start server:', error);
