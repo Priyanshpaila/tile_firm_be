@@ -2,8 +2,6 @@ const express = require('express');
 const helmet = require('helmet');
 const morgan = require('morgan');
 const cookieParser = require('cookie-parser');
-const path = require('path');
-const fs = require('fs');
 
 const { PORT, NODE_ENV } = require('./config/env');
 const connectDB = require('./config/db');
@@ -19,6 +17,7 @@ const categoryRoutes = require('./modules/category/category.routes');
 const visualizerRoutes = require('./modules/visualizer/visualizer.routes');
 const roomTemplateRoutes = require('./modules/roomTemplate/roomTemplate.routes');
 const uploadRoutes = require('./modules/upload/upload.routes');
+const uploadPublicRoutes = require('./modules/upload/upload.public.routes');
 const appointmentRoutes = require('./modules/appointment/appointment.routes');
 const paymentRoutes = require('./modules/payment/payment.routes');
 const staffRoutes = require('./modules/staff/staff.routes');
@@ -26,29 +25,20 @@ const adminRoutes = require('./modules/admin/admin.routes');
 
 const app = express();
 
-// Ensure uploads directory exists
-const uploadsDir = path.join(__dirname, '../uploads');
-if (!fs.existsSync(uploadsDir)) {
-  fs.mkdirSync(uploadsDir, { recursive: true });
-}
-
 // ------- Global Middleware -------
-app.use(helmet());
+app.use(
+  helmet({
+    crossOriginResourcePolicy: { policy: 'cross-origin' },
+  })
+);
 app.use(corsMiddleware);
 app.use(morgan(NODE_ENV === 'development' ? 'dev' : 'combined'));
 app.use(express.json({ limit: '10mb' }));
 app.use(express.urlencoded({ extended: true }));
 app.use(cookieParser());
 
-// Static file serving for uploads
-app.use(
-  '/uploads',
-  express.static(uploadsDir, {
-    maxAge: '7d',
-    etag: true,
-    lastModified: true,
-  })
-);
+// Public upload serving from MongoDB
+app.use('/uploads', uploadPublicRoutes);
 
 // Apply rate limit only to API routes
 app.use('/api', apiLimiter);
