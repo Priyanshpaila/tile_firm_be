@@ -68,6 +68,7 @@ generated-assets/
 # =========================
 # Docker
 # =========================
+Dockerfile
 docker-data/
 *.tar
 
